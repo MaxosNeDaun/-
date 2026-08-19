@@ -1,28 +1,25 @@
 import {
-  Client, GatewayIntentBits, MessageFlags, REST, Routes,
+  Client, GatewayIntentBits, REST, Routes,
   SlashCommandBuilder, PermissionFlagsBits, ChannelType,
 } from 'discord.js';
 import 'dotenv/config';
 import { loadData, addParticipant, removeParticipant, resetParticipants, setMessageRef } from './storage.js';
 import { buildRegistrationMessage } from './embed.js';
 
-// 1. Проверка переменных окружения
 const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID, CHANNEL_ID } = process.env;
 
 const missing = ['DISCORD_TOKEN', 'CLIENT_ID', 'GUILD_ID'].filter(name => !process.env[name]);
 if (missing.length) {
   console.error(`❌ Не заданы переменные окружения: ${missing.join(', ')}`);
-  console.error('   Добавьте их в Railway → вкладка Variables и передеплойте сервис.');
   process.exit(1);
 }
 
-// 2. Слэш-команды
 const commands = [
   new SlashCommandBuilder()
     .setName('setup')
     .setDescription('Опубликовать сообщение регистрации с кнопками')
     .addStringOption(o => o.setName('название').setDescription('Заголовок события (необязательно)').setRequired(false))
-    .addChannelOption(o => o.setName('канал').setDescription('В какой канал отправить (по умолчанию — текущий)').addChannelTypes(ChannelType.GuildText).setRequired(false))
+    .addChannelOption(o => o.setName('канал').setDescription('В какой канал отправить').addChannelTypes(ChannelType.GuildText).setRequired(false))
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
   new SlashCommandBuilder()
     .setName('reset')
@@ -30,17 +27,15 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ].map(c => c.toJSON());
 
-// 3. Инициализация клиента
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-// Используем clientReady вместо устаревшего ready
 client.once('clientReady', async () => {
   console.log(`✅ Бот вошёл в систему как ${client.user.tag}`);
 
   try {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
-    console.log('✅ Слэш-команды /setup и /reset зарегистрированы на сервере');
+    console.log('✅ Слэш-команды зарегистрированы');
   } catch (err) {
     console.error('❌ Не удалось зарегистрировать команды:', err.message);
   }
@@ -50,9 +45,9 @@ client.once('clientReady', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    // Обработка слэш-команд
+    // 1. ОБРАБОТКА СЛЭШ-КОМАНД
     if (interaction.isChatInputCommand()) {
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+      await interaction.deferReply({ ephemeral: true });
 
       if (interaction.commandName === 'setup') {
         const title = interaction.options.getString('название') || 'Регистрация участников';
@@ -73,7 +68,7 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         if (!targetChannel || !targetChannel.isTextBased()) {
-          await interaction.editReply({ content: '❌ Не удалось найти доступный текстовый канал.' });
+          await interaction.editReply({ content: '❌ Не удалось найти текстовый канал.' });
           return;
         }
 
@@ -81,7 +76,7 @@ client.on('interactionCreate', async (interaction) => {
         setMessageRef(message.id, message.channel.id, title);
 
         const reportTarget = targetChannel.id === interaction.channel.id ? 'этот канал' : `<#${targetChannel.id}>`;
-        await interaction.editReply({ content: `Сообщение регистрации опубликовано в ${reportTarget} ✅` });
+        await interaction.editReply({ content: `Сообщение публикации отправлено в ${reportTarget} ✅` });
       }
 
       if (interaction.commandName === 'reset') {
@@ -96,23 +91,31 @@ client.on('interactionCreate', async (interaction) => {
               await message.edit(buildRegistrationMessage(data, data.title));
             }
           } catch (e) {
-            console.error('Не удалось обновить сообщение при сбросе:', e.message);
+            console.error('Ошибка обновления сообщения:', e.message);
           }
         }
         await interaction.editReply({ content: 'Список участников очищен ✅' });
       }
     }
 
-    // Обработка кнопок
+    // 2. ОБРАБОТКА КНОПОК
     if (interaction.isButton()) {
       const data = loadData();
-      if (interaction.message.id !== data.messageId) return;
+
+      // Обязательно отвечаем Discord, даже если кнопка от старого сообщения
+      if (interaction.message.id !== data.messageId) {
+        await interaction.reply({ 
+          content: 'Эта кнопка недействительна (создана новая регистрация или бот был перезапущен).', 
+          ephemeral: true 
+        });
+        return;
+      }
 
       const userId = interaction.user.id;
 
       if (interaction.customId === 'register') {
         if (!addParticipant(userId)) {
-          await interaction.reply({ content: 'Вы уже в списке участников.', flags: MessageFlags.Ephemeral });
+          await interaction.reply({ content: 'Вы уже в списке участников.', ephemeral: true });
           return;
         }
         const updatedData = loadData();
@@ -121,7 +124,7 @@ client.on('interactionCreate', async (interaction) => {
 
       if (interaction.customId === 'unregister') {
         if (!removeParticipant(userId)) {
-          await interaction.reply({ content: 'Вас нет в списке участников.', flags: MessageFlags.Ephemeral });
+          await interaction.reply({ content: 'Вас нет в списке участников.', ephemeral: true });
           return;
         }
         const updatedData = loadData();
@@ -129,10 +132,10 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
   } catch (err) {
-    console.error('Ошибка обработки взаимодействия:', err);
+    console.error('Ошибка взаимодействия:', err);
 
     if (interaction.isRepliable()) {
-      const errorMessage = { content: 'Произошла ошибка, попробуйте ещё раз.', flags: MessageFlags.Ephemeral };
+      const errorMessage = { content: 'Произошла ошибка, попробуйте ещё раз.', ephemeral: true };
       if (interaction.deferred || interaction.replied) {
         await interaction.editReply(errorMessage).catch(() => {});
       } else {
@@ -143,7 +146,6 @@ client.on('interactionCreate', async (interaction) => {
 });
 
 client.login(DISCORD_TOKEN).catch(err => {
-  console.error('❌ Не удалось войти в Discord. Скорее всего DISCORD_TOKEN неверный.');
-  console.error(err.message);
+  console.error('❌ Не удалось войти в Discord:', err.message);
   process.exit(1);
 });
