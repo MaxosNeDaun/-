@@ -6,7 +6,7 @@ import 'dotenv/config';
 import { loadData, addParticipant, removeParticipant, resetParticipants, setMessageRef } from './storage.js';
 import { buildRegistrationMessage } from './embed.js';
 
-// ---- 1. Проверяем, что все нужные переменные заданы ----
+// ---- 1. Проверяем переменные окружения ----
 const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID, CHANNEL_ID } = process.env;
 
 const missing = ['DISCORD_TOKEN', 'CLIENT_ID', 'GUILD_ID'].filter(name => !process.env[name]);
@@ -36,14 +36,12 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 client.once('ready', async () => {
   console.log(`✅ Бот вошёл в систему как ${client.user.tag}`);
 
-  // Регистрируем команды сами, без ручного npm run deploy
   try {
     const rest = new REST({ version: '10' }).setToken(DISCORD_TOKEN);
     await rest.put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), { body: commands });
     console.log('✅ Слэш-команды /setup и /reset зарегистрированы на сервере');
   } catch (err) {
     console.error('❌ Не удалось зарегистрировать команды:', err.message);
-    console.error('   Проверьте, что CLIENT_ID и GUILD_ID указаны верно.');
   }
 
   console.log('🤖 Бот полностью готов к работе.');
@@ -51,10 +49,8 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   try {
+    // === 1. ОБРАБОТКА СЛЭШ-КОМАНД ===
     if (interaction.isChatInputCommand()) {
-      // Discord даёт всего 3 секунды на подтверждение команды. Сразу
-      // "откладываем" ответ (defer), чтобы успеть выполнить всю работу
-      // (сетевые запросы к каналам/сообщениям) без риска таймаута.
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       if (interaction.commandName === 'setup') {
@@ -64,14 +60,26 @@ client.on('interactionCreate', async (interaction) => {
 
         const chosenChannel = interaction.options.getChannel('канал');
         let targetChannel = interaction.channel;
+
         if (chosenChannel) {
           targetChannel = chosenChannel;
         } else if (CHANNEL_ID) {
-          targetChannel = await client.channels.fetch(CHANNEL_ID);
+          try {
+            targetChannel = await client.channels.fetch(CHANNEL_ID);
+          } catch (e) {
+            console.error('Не удалось получить канал по CHANNEL_ID:', e.message);
+          }
+        }
+
+        if (!targetChannel || !targetChannel.isTextBased()) {
+          await interaction.editReply({ content: '❌ Не удалось найти доступный текстовый канал.' });
+          return;
         }
 
         const message = await targetChannel.send(payload);
-        setMessageRef(message.id, message.channel.id);
+
+        // Сохраняем заголовок события вместе с ID сообщения, чтобы он не пропадал
+        setMessageRef(message.id, message.channel.id, title);
 
         const reportTarget = targetChannel.id === interaction.channel.id ? 'этот канал' : `<#${targetChannel.id}>`;
         await interaction.editReply({ content: `Сообщение регистрации опубликовано в ${reportTarget} ✅` });
@@ -80,15 +88,24 @@ client.on('interactionCreate', async (interaction) => {
       if (interaction.commandName === 'reset') {
         resetParticipants();
         const data = loadData();
+
         if (data.messageId && data.channelId) {
-          const channel = await client.channels.fetch(data.channelId);
-          const message = await channel.messages.fetch(data.messageId);
-          await message.edit(buildRegistrationMessage(data));
+          try {
+            const channel = await client.channels.fetch(data.channelId);
+            if (channel && channel.isTextBased()) {
+              const message = await channel.messages.fetch(data.messageId);
+              // Передаем сохраненный в файле/базе title
+              await message.edit(buildRegistrationMessage(data, data.title));
+            }
+          } catch (e) {
+            console.error('Не удалось обновить сообщение при сбросе:', e.message);
+          }
         }
         await interaction.editReply({ content: 'Список участников очищен ✅' });
       }
     }
 
+    // === 2. ОБРАБОТКА КНОПОК ===
     if (interaction.isButton()) {
       const data = loadData();
       if (interaction.message.id !== data.messageId) return;
@@ -100,7 +117,9 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: 'Вы уже в списке участников.', flags: MessageFlags.Ephemeral });
           return;
         }
-        await interaction.update(buildRegistrationMessage(loadData()));
+        const updatedData = loadData();
+        // Передаем кастомный title при обновлении сообщения
+        await interaction.update(buildRegistrationMessage(updatedData, updatedData.title));
       }
 
       if (interaction.customId === 'unregister') {
@@ -108,13 +127,22 @@ client.on('interactionCreate', async (interaction) => {
           await interaction.reply({ content: 'Вас нет в списке участников.', flags: MessageFlags.Ephemeral });
           return;
         }
-        await interaction.update(buildRegistrationMessage(loadData()));
+        const updatedData = loadData();
+        // Передаем кастомный title при обновлении сообщения
+        await interaction.update(buildRegistrationMessage(updatedData, updatedData.title));
       }
     }
   } catch (err) {
     console.error('Ошибка обработки взаимодействия:', err);
-    if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
-      await interaction.reply({ content: 'Произошла ошибка, попробуйте ещё раз.', flags: MessageFlags.Ephemeral }).catch(() => {});
+
+    // Безопасный ответ пользователю с учётом состояния deferReply
+    if (interaction.isRepliable()) {
+      const errorMessage = { content: 'Произошла ошибка, попробуйте ещё раз.', flags: MessageFlags.Ephemeral };
+      if (interaction.deferred || interaction.replied) {
+        await interaction.editReply(errorMessage).catch(() => {});
+      } else {
+        await interaction.reply(errorMessage).catch(() => {});
+      }
     }
   }
 });
