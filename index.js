@@ -6,7 +6,7 @@ import 'dotenv/config';
 import { loadData, addParticipant, removeParticipant, resetParticipants, setMessageRef } from './storage.js';
 import { buildRegistrationMessage } from './embed.js';
 
-// ---- 1. Проверяем переменные окружения ----
+// 1. Проверка переменных окружения
 const { DISCORD_TOKEN, CLIENT_ID, GUILD_ID, CHANNEL_ID } = process.env;
 
 const missing = ['DISCORD_TOKEN', 'CLIENT_ID', 'GUILD_ID'].filter(name => !process.env[name]);
@@ -16,7 +16,7 @@ if (missing.length) {
   process.exit(1);
 }
 
-// ---- 2. Описание слэш-команд ----
+// 2. Слэш-команды
 const commands = [
   new SlashCommandBuilder()
     .setName('setup')
@@ -30,10 +30,11 @@ const commands = [
     .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild),
 ].map(c => c.toJSON());
 
-// ---- 3. Клиент бота ----
+// 3. Инициализация клиента
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once('ready', async () => {
+// Используем clientReady вместо устаревшего ready
+client.once('clientReady', async () => {
   console.log(`✅ Бот вошёл в систему как ${client.user.tag}`);
 
   try {
@@ -49,7 +50,7 @@ client.once('ready', async () => {
 
 client.on('interactionCreate', async (interaction) => {
   try {
-    // === 1. ОБРАБОТКА СЛЭШ-КОМАНД ===
+    // Обработка слэш-команд
     if (interaction.isChatInputCommand()) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
@@ -77,8 +78,6 @@ client.on('interactionCreate', async (interaction) => {
         }
 
         const message = await targetChannel.send(payload);
-
-        // Сохраняем заголовок события вместе с ID сообщения, чтобы он не пропадал
         setMessageRef(message.id, message.channel.id, title);
 
         const reportTarget = targetChannel.id === interaction.channel.id ? 'этот канал' : `<#${targetChannel.id}>`;
@@ -94,7 +93,6 @@ client.on('interactionCreate', async (interaction) => {
             const channel = await client.channels.fetch(data.channelId);
             if (channel && channel.isTextBased()) {
               const message = await channel.messages.fetch(data.messageId);
-              // Передаем сохраненный в файле/базе title
               await message.edit(buildRegistrationMessage(data, data.title));
             }
           } catch (e) {
@@ -105,7 +103,7 @@ client.on('interactionCreate', async (interaction) => {
       }
     }
 
-    // === 2. ОБРАБОТКА КНОПОК ===
+    // Обработка кнопок
     if (interaction.isButton()) {
       const data = loadData();
       if (interaction.message.id !== data.messageId) return;
@@ -118,7 +116,6 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
         const updatedData = loadData();
-        // Передаем кастомный title при обновлении сообщения
         await interaction.update(buildRegistrationMessage(updatedData, updatedData.title));
       }
 
@@ -128,14 +125,12 @@ client.on('interactionCreate', async (interaction) => {
           return;
         }
         const updatedData = loadData();
-        // Передаем кастомный title при обновлении сообщения
         await interaction.update(buildRegistrationMessage(updatedData, updatedData.title));
       }
     }
   } catch (err) {
     console.error('Ошибка обработки взаимодействия:', err);
 
-    // Безопасный ответ пользователю с учётом состояния deferReply
     if (interaction.isRepliable()) {
       const errorMessage = { content: 'Произошла ошибка, попробуйте ещё раз.', flags: MessageFlags.Ephemeral };
       if (interaction.deferred || interaction.replied) {
